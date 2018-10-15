@@ -105,3 +105,6 @@ venv.bak/
 
 # configuration file (so it's not accidentally committed)
 config.py
+
+# persistent state
+news_history.json
