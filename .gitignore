@@ -102,3 +102,6 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+# configuration file (so it's not accidentally committed)
+config.py
