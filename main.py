@@ -3,10 +3,13 @@
 import config
 import json
 import lxml  # NOTE(mwek): for pipreqs
+import re
 import requests
 
 from bs4 import BeautifulSoup
 from contextlib import contextmanager
+from datetime import datetime, timedelta
+from hashlib import sha1
 
 
 def bs4_parse(content):
@@ -61,6 +64,41 @@ class KidConnect:
             })
         return news
 
+    def get_upcoming_events(self):
+        current_month = datetime.today()
+        next_month = current_month + timedelta(days=28)
+        while next_month.month == current_month.month:
+            next_month += timedelta(days=1)
+        return self._get_events_for_month(current_month) + self._get_events_for_month(next_month)
+
+    _event_re = re.compile(r'([^<>]+)<br><font[^>]*>(?:Grupa - )?([^<>]+)</font>')
+
+    def _get_events_for_month(self, date):
+        r = self._session.get(
+            'https://platforma.kidconnect.pl/dashboard/events',
+            params={'miesiac': '{0:%d.%m.%Y}'.format(date)},
+        )
+        r.raise_for_status()
+
+        bs = bs4_parse(r.content)
+        events = []
+        for d in bs.find_all('div', attrs={'data-trigger': 'focus'}):
+            content = d['data-content'].strip()
+            if not content:
+                continue
+
+            event_date = datetime(day=int(d.text.strip()), month=date.month, year=date.year)
+            for evt in self._event_re.findall(content):
+                event = {
+                    'date': '{0:%Y-%m-%d}'.format(event_date),
+                    'title': evt[0].strip(),
+                    'group': evt[1].strip(),
+                }
+                event['id'] = sha1(json.dumps(event, sort_keys=True).encode('utf-8')).hexdigest()
+                events.append(event)
+
+        return events
+
 
 class IFTTT:
     def __init__(self, key):
@@ -84,28 +122,37 @@ class HistoryManager:
     def __init__(self, path):
         self._path = path
 
-    def load(self):
+    def load(self, *args):
         try:
             with open(self._path, 'r') as f:
-                return json.load(f)
+                cnt = json.load(f)
+            return [cnt.get(a, []) for a in args]
         except FileNotFoundError:
-            return []
+            return [[] for a in args]
 
-    def store(self, content):
+    def store(self, **kwargs):
         with open(self._path, 'w') as f:
-            json.dump(content, f)
+            json.dump(kwargs, f)
+
+
+def new_items(current, history):
+    history_ids = {h['id'] for h in history}
+    return [c for c in current if c['id'] not in history_ids]
 
 
 if __name__ == '__main__':
     hm = HistoryManager(config.HISTORY_FILE)
-    last_seen_news = hm.load()
+    last_seen_news, last_seen_events = hm.load('news', 'events')
 
     kc = KidConnect()
     with kc.logged_in(config.KIDCONNECT_LOGIN, config.KIDCONNECT_PASSWORD):
         news = kc.get_news()
+        events = kc.get_upcoming_events()
 
-    old_news_id = {n['id'] for n in last_seen_news}
-    new_news = [n for n in news if n['id'] not in old_news_id]
+    new_news = new_items(news, last_seen_news)
+    print('News: {}'.format(new_news))
+    new_events = new_items(events, last_seen_events)
+    print('Events: {}'.format(new_events))
 
     ifttt = IFTTT(config.IFTTT_KEY)
     for n in new_news:
@@ -114,6 +161,14 @@ if __name__ == '__main__':
             'kidconnect_news',
             value1=n['title'],
             value2=n['header'],
-            value3=n['content'].replace('\n', '<br />\n'))
+            value3=n['content'].replace('\n', '<br />\n'),
+    )
 
-    hm.store(news)
+    for e in new_events:
+        ifttt.trigger(
+            'kidconnect_event',
+            value1=e['date'],
+            value2='{}: {}'.format(e['group'], e['title'])
+        )
+
+    hm.store(news=news, events=events)

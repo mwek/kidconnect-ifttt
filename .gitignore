@@ -107,4 +107,4 @@ venv.bak/
 config.py
 
 # persistent state
-news_history.json
+history.json
