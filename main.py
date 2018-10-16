@@ -171,4 +171,5 @@ if __name__ == '__main__':
             value2='{}: {}'.format(e['group'], e['title'])
         )
 
-    hm.store(news=news, events=events)
+    if new_news or new_events:
+        hm.store(news=news, events=events)
