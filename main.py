@@ -61,6 +61,7 @@ class KidConnect:
                 'title': n.find('span', class_='tytul_nowosci').get_text().strip(),
                 'header': n.find('small').get_text().strip(),
                 'content': n.find('div', class_='tresc-aktualnosci').get_text().strip(),
+                'attachments': [a['href'] for a in n.find('div', class_='newsAttachments').find_all('a')],
             })
         return news
 
@@ -157,11 +158,14 @@ if __name__ == '__main__':
     ifttt = IFTTT(config.IFTTT_KEY)
     for n in new_news:
         print('New news: {}'.format(n))
+        mail_content = '{}<br /><br />{}'.format(n['header'], n['content'])
+        if n['attachments']:
+            mail_content += '<br />- '.join(['<br /><br />Załączniki / Attachments:'] + n['attachments'])
+
         ifttt.trigger(
             'kidconnect_news',
             value1=n['title'],
-            value2=n['header'],
-            value3=n['content'].replace('\n', '<br />\n'),
+            value2=mail_content,
     )
 
     for e in new_events:
