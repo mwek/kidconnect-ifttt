@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from hashlib import sha1
+from itertools import count
 
 
 def bs4_parse(content):
@@ -47,28 +48,47 @@ class KidConnect:
         finally:
             self.logout()
 
-    def get_news(self, page=1):
+    def get_news(self):
+        all_news = []
+        for page in count(1):
+            page_news = self._get_news(page)
+            if not page_news:
+                break
+            all_news += page_news
+
+        return sorted(all_news, key=lambda n: n['date'], reverse=True)
+
+    def _get_news(self, page):
         r = self._session.get(
             'https://platforma.kidconnect.pl/dashboard/filterrednews',
             params={'page': page, 'filterType': 'all'})
         r.raise_for_status()
 
         bs = bs4_parse(r.content)
-        news = []
-        for n in bs.find_all('div', class_='aktualnosc'):
-            parsed_news = {
-                'id': n['data-aktualnoscid'],
-                'title': n.find('span', class_='tytul_nowosci').get_text().strip(),
-                'header': n.find('small').get_text().strip(),
-                'content': n.find('div', class_='tresc-aktualnosci').get_text().strip(),
-            }
-            attachments = n.find('div', class_='newsAttachments')
-            if attachments:
-                parsed_news['attachments'] = [a['href'] for a in attachments.find_all('a')]
-            else:
-                parsed_news['attachments'] = []
-            news.append(parsed_news)
-        return news
+        return [self._parse_news(n) for n in bs.find_all('div', class_='aktualnosc')]
+
+    _date_re = re.compile(r'Data: ([^,]+)')
+
+    def _parse_news(self, n):
+        parsed_news = {
+            'id': n['data-aktualnoscid'],
+            'title': n.find('span', class_='tytul_nowosci').get_text().strip(),
+            'header': n.find('small').get_text().strip(),
+            'content': n.find('div', class_='tresc-aktualnosci').get_text().strip(),
+        }
+
+        news_date_text = self._date_re.search(parsed_news['header']).group(1)
+        news_date = datetime.strptime(news_date_text, '%d.%m.%Y %H:%M')
+
+        parsed_news['date'] = '{0:%Y-%m-%d %H:%M}'.format(news_date)
+
+        attachments = n.find('div', class_='newsAttachments')
+        if attachments:
+            parsed_news['attachments'] = [a['href'] for a in attachments.find_all('a')]
+        else:
+            parsed_news['attachments'] = []
+
+        return parsed_news
 
     def get_upcoming_events(self):
         current_month = datetime.today()
