@@ -56,13 +56,18 @@ class KidConnect:
         bs = bs4_parse(r.content)
         news = []
         for n in bs.find_all('div', class_='aktualnosc'):
-            news.append({
+            parsed_news = {
                 'id': n['data-aktualnoscid'],
                 'title': n.find('span', class_='tytul_nowosci').get_text().strip(),
                 'header': n.find('small').get_text().strip(),
                 'content': n.find('div', class_='tresc-aktualnosci').get_text().strip(),
-                'attachments': [a['href'] for a in n.find('div', class_='newsAttachments').find_all('a')],
-            })
+            }
+            attachments = n.find('div', class_='newsAttachments')
+            if attachments:
+                parsed_news['attachments'] = [a['href'] for a in attachments.find_all('a')]
+            else:
+                parsed_news['attachments'] = []
+            news.append(parsed_news)
         return news
 
     def get_upcoming_events(self):
