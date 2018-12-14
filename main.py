@@ -17,6 +17,14 @@ def bs4_parse(content):
     return BeautifulSoup(content, 'lxml')
 
 
+def nl2br(s):
+    return s.replace('\r\n', '<br />').replace('\n', '<br />').replace('<br />', '<br />\n')
+
+
+def stable_id(d):
+    return sha1(json.dumps(d, sort_keys=True).encode('utf-8')).hexdigest()
+
+
 class KidConnect:
     def __init__(self):
         self._session = requests.Session()
@@ -74,7 +82,7 @@ class KidConnect:
             'id': n['data-aktualnoscid'],
             'title': n.find('span', class_='tytul_nowosci').get_text().strip(),
             'header': n.find('small').get_text().strip(),
-            'content': n.find('div', class_='tresc-aktualnosci').get_text().strip(),
+            'content': nl2br(n.find('div', class_='tresc-aktualnosci').get_text().strip()),
         }
 
         news_date_text = self._date_re.search(parsed_news['header']).group(1)
@@ -120,10 +128,36 @@ class KidConnect:
                     'title': evt[0].strip(),
                     'group': evt[1].strip(),
                 }
-                event['id'] = sha1(json.dumps(event, sort_keys=True).encode('utf-8')).hexdigest()
+                event['id'] = stable_id(event)
                 events.append(event)
 
         return events
+
+    def get_conversations(self, ids):
+        return {id: self._get_conversation(id) for id in ids}
+
+    def _get_conversation(self, id):
+        r = self._session.get(
+            'https://platforma.kidconnect.pl/conversation/messages/getlastfive',
+            params={
+                'currentLoadedMessages': 1000,  # To make the API return more than 5 messages
+                'conversationId': id,
+                'messagesIdArray': 'a:1:{i:0;i:0;}',
+            }
+        )
+        r.raise_for_status()
+
+        bs = bs4_parse(r.json()['view'])
+        return [self._parse_message(m) for m in bs.find_all('div', class_='pointer')]
+
+    def _parse_message(self, bs):
+        message = {}
+        header = bs.find('div', class_='card-header')
+        message['author'] = header.find('b').text.strip()
+        message['date'] = header.find('small').text.strip()
+        message['content'] = nl2br(bs.find('div', class_='card-body').text.strip())
+        message['id'] = stable_id(message)
+        return message
 
 
 class IFTTT:
@@ -152,7 +186,7 @@ class HistoryManager:
         try:
             with open(self._path, 'r') as f:
                 cnt = json.load(f)
-            return [cnt.get(a, []) for a in args]
+            return [cnt.get(a) for a in args]
         except FileNotFoundError:
             return [[] for a in args]
 
@@ -168,21 +202,26 @@ def new_items(current, history):
 
 if __name__ == '__main__':
     hm = HistoryManager(config.HISTORY_FILE)
-    last_seen_news, last_seen_events = hm.load('news', 'events')
+    last_seen_news, last_seen_events, last_seen_conversations = hm.load('news', 'events', 'conversations')
 
     kc = KidConnect()
     with kc.logged_in(config.KIDCONNECT_LOGIN, config.KIDCONNECT_PASSWORD):
         news = kc.get_news()
         events = kc.get_upcoming_events()
+        conversations = kc.get_conversations(config.CONVERSATIONS.keys())
 
-    new_news = new_items(news, last_seen_news)
+    new_news = new_items(news, last_seen_news or [])
     print('News: {}'.format(new_news))
-    new_events = new_items(events, last_seen_events)
+    new_events = new_items(events, last_seen_events or [])
     print('Events: {}'.format(new_events))
+    new_conversations = {
+        id: new_items(messages, (last_seen_conversations or {}).get(str(id), []))
+        for id, messages in conversations.items()
+    }
+    print('Conversations: {}'.format(new_conversations))
 
     ifttt = IFTTT(config.IFTTT_KEY)
     for n in new_news:
-        print('New news: {}'.format(n))
         mail_content = '{}<br /><br />{}'.format(n['header'], n['content'])
         if n['attachments']:
             mail_content += '<br />- '.join(['<br /><br />Załączniki / Attachments:'] + n['attachments'])
@@ -200,5 +239,15 @@ if __name__ == '__main__':
             value2='{}: {}'.format(e['group'], e['title'])
         )
 
-    if new_news or new_events:
-        hm.store(news=news, events=events)
+    for cid, messages in new_conversations.items():
+        for m in messages:
+            ifttt.trigger(
+                'kidconnect_message',
+                value1='[{}] New message from {}'.format(config.CONVERSATIONS[cid], m['author']),
+                value2='Author: {}<br />Date: {}<br /><br />{}<br /><br />https://platforma.kidconnect.pl/conversation/{}'.format(
+                    m['author'], m['date'], m['content'], cid
+                )
+            )
+
+    if new_news or new_events or any(new_conversations.values()):
+        hm.store(news=news, events=events, conversations=conversations)
